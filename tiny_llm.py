@@ -12,9 +12,17 @@ PR #2: Data Loading & Batching
 ------------------------------
 Now we'll prepare training data: sequences where the model learns to predict
 the next token given previous tokens.
+
+PR #3: Embeddings
+-----------------
+Transform discrete token IDs into continuous vectors that neural networks can
+learn from. We need two types:
+1. Token embeddings: Each token ID gets a learnable vector representation
+2. Positional embeddings: Encode where each token appears in the sequence
 """
 
 import torch
+import torch.nn as nn
 from torch.utils.data import Dataset
 
 
@@ -143,6 +151,78 @@ def load_text_data(text: str, block_size: int = 8):
     return dataset, tokenizer
 
 
+class Embeddings(nn.Module):
+    """
+    Embeddings: Converting Token IDs to Learnable Vectors
+    ------------------------------------------------------
+    
+    Neural networks can't directly process discrete token IDs (like 0, 1, 2...).
+    We need to convert them to continuous vectors that can be updated via gradients.
+    
+    Two types of embeddings:
+    1. Token Embeddings: "What" - the identity of each token
+    2. Positional Embeddings: "Where" - the position in the sequence
+    
+    Why both?
+    - Transformers process all positions in parallel (no recurrence)
+    - Without position info, "cat sat" = "sat cat" (just a bag of tokens!)
+    - Position embeddings let the model know token order
+    
+    The final representation is: token_emb + position_emb
+    """
+    
+    def __init__(self, vocab_size: int, block_size: int, n_embd: int):
+        """
+        Args:
+            vocab_size: Number of unique tokens (256 for byte-level)
+            block_size: Maximum sequence length we'll process
+            n_embd: Dimension of embedding vectors (e.g., 384, 768)
+        """
+        super().__init__()
+        
+        # Token embeddings: lookup table of vocab_size x n_embd
+        # Each of our 256 possible bytes gets an n_embd-dimensional vector
+        self.token_embedding = nn.Embedding(vocab_size, n_embd)
+        
+        # Position embeddings: lookup table of block_size x n_embd
+        # Each position (0, 1, 2, ..., block_size-1) gets an n_embd-dimensional vector
+        self.position_embedding = nn.Embedding(block_size, n_embd)
+        
+        # Store dimensions for later use
+        self.block_size = block_size
+        self.n_embd = n_embd
+        
+    def forward(self, token_ids: torch.Tensor) -> torch.Tensor:
+        """
+        Convert token IDs to embeddings.
+        
+        Args:
+            token_ids: Tensor of shape (batch_size, sequence_length)
+                      Contains token IDs from our tokenizer
+        
+        Returns:
+            Tensor of shape (batch_size, sequence_length, n_embd)
+            Each token ID is now an n_embd-dimensional vector!
+        """
+        batch_size, seq_len = token_ids.shape
+        
+        # Get token embeddings: (batch_size, seq_len) -> (batch_size, seq_len, n_embd)
+        tok_emb = self.token_embedding(token_ids)
+        
+        # Create position indices: [0, 1, 2, ..., seq_len-1]
+        pos = torch.arange(seq_len, device=token_ids.device)
+        
+        # Get position embeddings: (seq_len,) -> (seq_len, n_embd)
+        # We'll broadcast this across the batch
+        pos_emb = self.position_embedding(pos)
+        
+        # Combine token and position information
+        # Both have shape (batch_size, seq_len, n_embd), so we just add!
+        embeddings = tok_emb + pos_emb
+        
+        return embeddings
+
+
 def test_tokenizer():
     """
     Test our tokenizer with various examples to understand how it works.
@@ -233,18 +313,202 @@ def test_data_loading():
         print()
 
 
+def test_embeddings():
+    """
+    Test embeddings and visualize how they transform token IDs to vectors.
+    """
+    print("EMBEDDINGS DEEP DIVE")
+    print("-" * 60)
+    print()
+    
+    # Setup: Small dimensions for easy visualization
+    vocab_size = 256  # Our byte vocabulary
+    block_size = 8    # Max sequence length
+    n_embd = 16       # Small embedding dimension for visualization
+    
+    print(f"Configuration:")
+    print(f"  Vocab size: {vocab_size} (all possible bytes)")
+    print(f"  Block size: {block_size} (max sequence length)")
+    print(f"  Embedding dim: {n_embd} (size of each vector)")
+    print()
+    
+    # Create the embeddings module
+    embeddings = Embeddings(vocab_size, block_size, n_embd)
+    
+    # Example 1: Single sequence
+    print("=" * 60)
+    print("EXAMPLE 1: Single Sequence")
+    print("=" * 60)
+    
+    text = "Hi!"
+    tokenizer = ByteTokenizer()
+    token_ids = tokenizer.encode(text)
+    print(f"Text: '{text}'")
+    print(f"Token IDs: {token_ids}")
+    print()
+    
+    # Convert to tensor and add batch dimension
+    tokens_tensor = torch.tensor([token_ids])  # Shape: [1, 3]
+    print(f"Input tensor shape: {tokens_tensor.shape}")
+    print(f"Input tensor: {tokens_tensor}")
+    print()
+    
+    # Get embeddings
+    with torch.no_grad():  # No gradients needed for testing
+        emb = embeddings(tokens_tensor)
+    
+    print(f"Output embedding shape: {emb.shape}")
+    print(f"  (batch_size=1, seq_len=3, n_embd={n_embd})")
+    print()
+    
+    # Visualize the embedding matrix for first token
+    print("First token embedding vector (first 8 values):")
+    print(f"  Token '{text[0]}' (ID={token_ids[0]}) -> {emb[0, 0, :8].numpy().round(3)}")
+    print()
+    
+    # Example 2: Understanding position embeddings
+    print("=" * 60)
+    print("EXAMPLE 2: Position Embeddings Visualization")
+    print("=" * 60)
+    
+    # Same token in different positions
+    repeated_token = [72, 72, 72]  # 'H' three times
+    tokens_tensor = torch.tensor([repeated_token])
+    
+    print(f"Input: Same token (72='H') in 3 positions")
+    print(f"Token IDs: {repeated_token}")
+    print()
+    
+    # Get individual components
+    with torch.no_grad():
+        # Token embeddings (same for all positions)
+        tok_emb = embeddings.token_embedding(tokens_tensor)
+        
+        # Position embeddings (different for each position)
+        positions = torch.arange(3)
+        pos_emb = embeddings.position_embedding(positions)
+        
+        # Combined
+        combined = embeddings(tokens_tensor)
+    
+    print("Token embedding for 'H' (same for all positions):")
+    print(f"  First 8 values: {tok_emb[0, 0, :8].numpy().round(3)}")
+    print()
+    
+    print("Position embeddings (different for each position):")
+    for i in range(3):
+        print(f"  Position {i}: {pos_emb[i, :8].numpy().round(3)}")
+    print()
+    
+    print("Combined embeddings (token + position):")
+    for i in range(3):
+        print(f"  Position {i}: {combined[0, i, :8].numpy().round(3)}")
+    print()
+    
+    print("Notice: Same token 'H' has different final embeddings due to position!")
+    print()
+    
+    # Example 3: Batch processing
+    print("=" * 60)
+    print("EXAMPLE 3: Batch Processing")
+    print("=" * 60)
+    
+    texts = ["Hi", "Bye", "OK!"]
+    batch = []
+    max_len = 3
+    
+    print("Batch of texts:")
+    for text in texts:
+        tokens = tokenizer.encode(text)
+        # Pad to same length (using 0 as padding token)
+        padded = tokens + [0] * (max_len - len(tokens))
+        batch.append(padded[:max_len])
+        print(f"  '{text}' -> {tokens} -> padded: {padded[:max_len]}")
+    
+    batch_tensor = torch.tensor(batch)
+    print(f"\nBatch tensor shape: {batch_tensor.shape} (batch_size=3, seq_len=3)")
+    print()
+    
+    with torch.no_grad():
+        batch_emb = embeddings(batch_tensor)
+    
+    print(f"Batch embedding shape: {batch_emb.shape}")
+    print(f"  (batch_size=3, seq_len=3, n_embd={n_embd})")
+    print()
+    
+    # Show that each sequence in the batch gets its own embeddings
+    for i, text in enumerate(texts):
+        print(f"Embeddings for '{text}' (first token, first 8 dims):")
+        print(f"  {batch_emb[i, 0, :8].numpy().round(3)}")
+    print()
+    
+    # Example 4: Why position matters
+    print("=" * 60)
+    print("EXAMPLE 4: Why Position Matters")
+    print("=" * 60)
+    
+    text1 = "AB"
+    text2 = "BA"
+    
+    tokens1 = torch.tensor([tokenizer.encode(text1)])
+    tokens2 = torch.tensor([tokenizer.encode(text2)])
+    
+    with torch.no_grad():
+        emb1 = embeddings(tokens1)
+        emb2 = embeddings(tokens2)
+    
+    print(f"'{text1}' tokens: {tokens1[0].tolist()}")
+    print(f"'{text2}' tokens: {tokens2[0].tolist()}")
+    print()
+    
+    print("Without positions, these would be identical (just different order).")
+    print("With positions, they're completely different:")
+    print()
+    
+    print(f"'{text1}' first token ('A' at pos 0) embedding (first 8 dims):")
+    print(f"  {emb1[0, 0, :8].numpy().round(3)}")
+    print(f"'{text2}' first token ('B' at pos 0) embedding (first 8 dims):")
+    print(f"  {emb2[0, 0, :8].numpy().round(3)}")
+    print()
+    print("These are different because 'A' vs 'B' are different tokens!")
+    print()
+    
+    print(f"'{text1}' second token ('B' at pos 1) embedding (first 8 dims):")
+    print(f"  {emb1[0, 1, :8].numpy().round(3)}")
+    print(f"'{text2}' second token ('A' at pos 1) embedding (first 8 dims):")
+    print(f"  {emb2[0, 1, :8].numpy().round(3)}")
+    print()
+    print("'B' at position 1 differs from 'B' at position 0!")
+
+
 if __name__ == "__main__":
     import sys
     
-    if len(sys.argv) > 1 and sys.argv[1] == "tokenizer":
-        print("=" * 60)
-        print("BYTE-LEVEL TOKENIZER EXPLORATION")
-        print("=" * 60)
-        print()
-        test_tokenizer()
+    if len(sys.argv) > 1:
+        if sys.argv[1] == "tokenizer":
+            print("=" * 60)
+            print("BYTE-LEVEL TOKENIZER EXPLORATION")
+            print("=" * 60)
+            print()
+            test_tokenizer()
+        elif sys.argv[1] == "data":
+            print("=" * 60)
+            print("DATA LOADING EXPLORATION")
+            print("=" * 60)
+            print()
+            test_data_loading()
+        elif sys.argv[1] == "embeddings":
+            print("=" * 60)
+            print("EMBEDDINGS EXPLORATION")
+            print("=" * 60)
+            print()
+            test_embeddings()
+        else:
+            print("Usage: python tiny_llm.py [tokenizer|data|embeddings]")
     else:
+        # Default: run the latest test
         print("=" * 60)
-        print("DATA LOADING EXPLORATION")
+        print("EMBEDDINGS EXPLORATION")
         print("=" * 60)
         print()
-        test_data_loading()
+        test_embeddings()

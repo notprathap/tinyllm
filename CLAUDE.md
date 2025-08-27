@@ -70,12 +70,13 @@ python3 scaffolding.py --generate --ckpt ckpt.pt --prompt "Start text" --tempera
 ## PR Sequence (Learning Path)
 
 ### Completed PRs
-_(None yet - starting fresh)_
+1. **PR #1: Byte-Level Tokenizer** ✅ - Convert text to numbers (0-255)
+2. **PR #2: Data Loading** ✅ - Prepare sequences for training
+
+### In Progress
+3. **PR #3: Embeddings** 🚧 - Transform tokens to vectors
 
 ### Upcoming PRs
-1. **PR #1: Byte-Level Tokenizer** - Convert text to numbers (0-255)
-2. **PR #2: Data Loading** - Prepare sequences for training
-3. **PR #3: Embeddings** - Transform tokens to vectors
 4. **PR #4: Single-Head Attention** - Core attention mechanism
 5. **PR #5: Multi-Head Attention** - Parallel attention patterns
 6. **PR #6: Feed-Forward Network** - Processing after attention
@@ -91,3 +92,4 @@ _(None yet - starting fresh)_
 - Build everything in `tiny_llm.py` incrementally through PRs
 - Each PR should be self-contained and testable
 - Include learning insights as comments in the code
+- every time we run the command post-merge, update claude.md to reflect which PRs have been completed and what's coming up
