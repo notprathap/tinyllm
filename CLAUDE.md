@@ -72,9 +72,7 @@ python3 scaffolding.py --generate --ckpt ckpt.pt --prompt "Start text" --tempera
 ### Completed PRs
 1. **PR #1: Byte-Level Tokenizer** ✅ - Convert text to numbers (0-255)
 2. **PR #2: Data Loading** ✅ - Prepare sequences for training
-
-### In Progress
-3. **PR #3: Embeddings** 🚧 - Transform tokens to vectors
+3. **PR #3: Embeddings** ✅ - Transform tokens to vectors
 
 ### Upcoming PRs
 4. **PR #4: Single-Head Attention** - Core attention mechanism
