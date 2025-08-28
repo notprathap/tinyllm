@@ -74,8 +74,10 @@ python3 scaffolding.py --generate --ckpt ckpt.pt --prompt "Start text" --tempera
 2. **PR #2: Data Loading** ✅ - Prepare sequences for training
 3. **PR #3: Embeddings** ✅ - Transform tokens to vectors
 
+### In Progress
+4. **PR #4: Single-Head Attention** 🚧 - Core attention mechanism
+
 ### Upcoming PRs
-4. **PR #4: Single-Head Attention** - Core attention mechanism
 5. **PR #5: Multi-Head Attention** - Parallel attention patterns
 6. **PR #6: Feed-Forward Network** - Processing after attention
 7. **PR #7: Transformer Block** - Complete building block

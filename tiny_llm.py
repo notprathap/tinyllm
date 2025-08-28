@@ -19,11 +19,22 @@ Transform discrete token IDs into continuous vectors that neural networks can
 learn from. We need two types:
 1. Token embeddings: Each token ID gets a learnable vector representation
 2. Positional embeddings: Encode where each token appears in the sequence
+
+PR #4: Single-Head Attention
+----------------------------
+The core mechanism of transformers - allowing tokens to "attend" to each other.
+Attention computes weighted averages of values based on query-key similarities.
+The three components:
+1. Query (Q): "What am I looking for?"
+2. Key (K): "What information do I contain?"  
+3. Value (V): "Here's my actual content to share"
 """
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import Dataset
+import math
 
 
 class ByteTokenizer:
@@ -221,6 +232,110 @@ class Embeddings(nn.Module):
         embeddings = tok_emb + pos_emb
         
         return embeddings
+
+
+class SingleHeadAttention(nn.Module):
+    """
+    Single-Head Self-Attention: The Foundation of Transformers
+    ----------------------------------------------------------
+    
+    Self-attention allows each token to look at all other tokens and decide
+    which ones are most relevant. It's "self" because the queries, keys, and
+    values all come from the same input sequence.
+    
+    The Attention Formula:
+    Attention(Q, K, V) = softmax(QK^T / √d_k) V
+    
+    Where:
+    - Q (Query): What each token is looking for
+    - K (Key): What each token offers to others
+    - V (Value): The actual information to aggregate
+    - √d_k: Scaling factor to prevent softmax saturation
+    
+    For autoregressive models (like GPT), we add causal masking to prevent
+    tokens from attending to future positions (no cheating!).
+    """
+    
+    def __init__(self, n_embd: int, block_size: int, dropout: float = 0.1):
+        """
+        Args:
+            n_embd: Embedding dimension (must be divisible by n_head for multi-head)
+            block_size: Maximum sequence length
+            dropout: Dropout probability for attention weights
+        """
+        super().__init__()
+        
+        # Linear projections for Q, K, V
+        # All three projections map from n_embd to n_embd
+        self.query = nn.Linear(n_embd, n_embd)
+        self.key = nn.Linear(n_embd, n_embd)
+        self.value = nn.Linear(n_embd, n_embd)
+        
+        # Output projection (after attention)
+        self.out_proj = nn.Linear(n_embd, n_embd)
+        
+        # Dropout for regularization
+        self.dropout = nn.Dropout(dropout)
+        
+        # Causal mask - lower triangular matrix
+        # This prevents tokens from attending to future positions
+        # register_buffer ensures it's moved to GPU with the model but not updated
+        self.register_buffer('mask', torch.tril(torch.ones(block_size, block_size)))
+        
+        self.n_embd = n_embd
+        self.scale = 1.0 / math.sqrt(n_embd)  # 1/√d_k for scaling
+        
+    def forward(self, x: torch.Tensor, return_weights: bool = False):
+        """
+        Apply self-attention to input embeddings.
+        
+        Args:
+            x: Input tensor of shape (batch_size, seq_len, n_embd)
+            return_weights: If True, also return attention weights for visualization
+            
+        Returns:
+            Output tensor of shape (batch_size, seq_len, n_embd)
+            Optionally: attention weights of shape (batch_size, seq_len, seq_len)
+        """
+        B, T, C = x.shape  # Batch, Time (sequence), Channels (embedding)
+        
+        # Project input to Q, K, V
+        # Each has shape (B, T, C)
+        Q = self.query(x)
+        K = self.key(x)
+        V = self.value(x)
+        
+        # Compute attention scores: Q @ K^T
+        # (B, T, C) @ (B, C, T) -> (B, T, T)
+        # Each cell [i,j] represents how much token i attends to token j
+        scores = Q @ K.transpose(-2, -1) * self.scale
+        
+        # Apply causal mask (only for autoregressive models)
+        # Set future positions to -inf so they become 0 after softmax
+        scores = scores.masked_fill(self.mask[:T, :T] == 0, float('-inf'))
+        
+        # Apply softmax to get attention weights
+        # Each row sums to 1 (probability distribution over tokens to attend to)
+        att_weights = F.softmax(scores, dim=-1)
+        
+        # Apply dropout to attention weights
+        att_weights = self.dropout(att_weights)
+        
+        # Weighted sum of values
+        # (B, T, T) @ (B, T, C) -> (B, T, C)
+        # Each token becomes a weighted combination of all tokens it attends to
+        out = att_weights @ V
+        
+        # Final output projection
+        out = self.out_proj(out)
+        
+        # Residual connection: add input to output
+        # This helps gradients flow and lets the network learn "changes" to x
+        out = x + out
+        
+        if return_weights:
+            return out, att_weights
+        return out
 
 
 def test_tokenizer():
@@ -481,6 +596,267 @@ def test_embeddings():
     print("'B' at position 1 differs from 'B' at position 0!")
 
 
+def test_attention():
+    """
+    Deep dive into how single-head attention works step by step.
+    """
+    print("SINGLE-HEAD ATTENTION MECHANISM")
+    print("-" * 60)
+    print()
+    
+    # Configuration
+    n_embd = 8        # Small embedding dimension for visualization
+    block_size = 6    # Maximum sequence length
+    
+    print("Configuration:")
+    print(f"  Embedding dimension: {n_embd}")
+    print(f"  Block size: {block_size}")
+    print()
+    
+    # Create modules
+    tokenizer = ByteTokenizer()
+    embeddings = Embeddings(256, block_size, n_embd)
+    attention = SingleHeadAttention(n_embd, block_size, dropout=0.0)  # No dropout for clarity
+    
+    # Example 1: Step-by-step attention computation
+    print("=" * 60)
+    print("EXAMPLE 1: Step-by-Step Attention Computation")
+    print("=" * 60)
+    print()
+    
+    # Simple input sequence
+    text = "ABC"
+    token_ids = tokenizer.encode(text)
+    print(f"Input text: '{text}'")
+    print(f"Token IDs: {token_ids}")
+    print()
+    
+    # Get embeddings
+    tokens_tensor = torch.tensor([token_ids])  # Add batch dimension
+    with torch.no_grad():
+        emb = embeddings(tokens_tensor)
+        print(f"Embeddings shape: {emb.shape} (batch=1, seq_len=3, n_embd={n_embd})")
+        print()
+        
+        # Step 1: Compute Q, K, V
+        Q = attention.query(emb)
+        K = attention.key(emb)
+        V = attention.value(emb)
+        
+        print("Step 1: Linear Projections to Q, K, V")
+        print("-" * 40)
+        print(f"Q shape: {Q.shape}")
+        print(f"K shape: {K.shape}")
+        print(f"V shape: {V.shape}")
+        print()
+        
+        print("Query vectors (what each token is looking for):")
+        for i, char in enumerate(text):
+            print(f"  '{char}': {Q[0, i, :4].numpy().round(2)}...")
+        print()
+        
+        print("Key vectors (what each token offers):")
+        for i, char in enumerate(text):
+            print(f"  '{char}': {K[0, i, :4].numpy().round(2)}...")
+        print()
+        
+        print("Value vectors (actual content to share):")
+        for i, char in enumerate(text):
+            print(f"  '{char}': {V[0, i, :4].numpy().round(2)}...")
+        print()
+        
+        # Step 2: Compute attention scores
+        scores = Q @ K.transpose(-2, -1) * attention.scale
+        
+        print("Step 2: Compute Attention Scores (Q @ K^T)")
+        print("-" * 40)
+        print(f"Scores = Q @ K^T * scale")
+        print(f"Scale factor: 1/√{n_embd} = {attention.scale:.3f}")
+        print()
+        print("Raw attention scores (before masking):")
+        print("     " + "    ".join([f"'{c}'" for c in text]))
+        for i, char in enumerate(text):
+            row = [f"{scores[0, i, j].item():6.2f}" for j in range(len(text))]
+            print(f"'{char}': " + " ".join(row))
+        print("\nEach row shows how much that token wants to attend to each column")
+        print()
+        
+        # Step 3: Apply causal mask
+        masked_scores = scores.masked_fill(attention.mask[:3, :3] == 0, float('-inf'))
+        
+        print("Step 3: Apply Causal Mask")
+        print("-" * 40)
+        print("Mask pattern (1 = allowed, 0 = blocked):")
+        print(attention.mask[:3, :3].int().numpy())
+        print()
+        print("Scores after masking (future = -inf):")
+        print("     " + "    ".join([f"'{c}'" for c in text]))
+        for i, char in enumerate(text):
+            row = []
+            for j in range(len(text)):
+                val = masked_scores[0, i, j].item()
+                if val == float('-inf'):
+                    row.append("  -inf")
+                else:
+                    row.append(f"{val:6.2f}")
+            print(f"'{char}': " + " ".join(row))
+        print("\n'A' can only see itself, 'B' can see A and B, 'C' can see all")
+        print()
+        
+        # Step 4: Apply softmax
+        att_weights = F.softmax(masked_scores, dim=-1)
+        
+        print("Step 4: Apply Softmax (convert to probabilities)")
+        print("-" * 40)
+        print("Attention weights (each row sums to 1.0):")
+        print("     " + "    ".join([f"'{c}'" for c in text]))
+        for i, char in enumerate(text):
+            row = [f"{att_weights[0, i, j].item():6.3f}" for j in range(len(text))]
+            print(f"'{char}': " + " ".join(row))
+            print(f"        Sum: {att_weights[0, i, :].sum().item():.3f}")
+        print()
+        
+        # Step 5: Weighted sum of values
+        output = att_weights @ V
+        
+        print("Step 5: Weighted Sum of Values")
+        print("-" * 40)
+        print("Output = attention_weights @ V")
+        print(f"Output shape: {output.shape}")
+        print()
+        print("Final output vectors (weighted combinations):")
+        for i, char in enumerate(text):
+            print(f"  '{char}': {output[0, i, :4].numpy().round(2)}...")
+        print()
+    
+    # Example 2: Visualizing attention patterns
+    print("=" * 60)
+    print("EXAMPLE 2: Attention Patterns for a Sentence")
+    print("=" * 60)
+    print()
+    
+    sentence = "Hi Bob"
+    tokens = tokenizer.encode(sentence)
+    tokens_tensor = torch.tensor([tokens])
+    
+    with torch.no_grad():
+        emb = embeddings(tokens_tensor)
+        output, weights = attention(emb, return_weights=True)
+        
+        print(f"Input: '{sentence}'")
+        print(f"Tokens: {tokens}")
+        print()
+        
+        # Display attention matrix
+        print("Attention weights matrix:")
+        print("(Each row shows where that token is looking)")
+        print()
+        
+        # Create character labels for each byte
+        chars = []
+        for t in tokens:
+            try:
+                chars.append(tokenizer.decode([t]))
+            except:
+                chars.append(f"[{t}]")
+        
+        # Header
+        print("      " + "".join([f"{c:>7}" for c in chars]))
+        
+        # Rows
+        for i, from_char in enumerate(chars):
+            row_weights = weights[0, i, :].numpy()
+            row_str = "".join([f"{w:7.3f}" for w in row_weights])
+            print(f"{from_char:>5}: {row_str}")
+        print()
+        
+        # Find strongest attention for each position
+        print("Strongest attention patterns:")
+        for i, from_char in enumerate(chars):
+            max_idx = weights[0, i, :i+1].argmax().item()  # Only look at valid positions
+            max_weight = weights[0, i, max_idx].item()
+            to_char = chars[max_idx]
+            print(f"  '{from_char}' -> '{to_char}' (weight: {max_weight:.3f})")
+    
+    # Example 3: Effect of attention on information flow
+    print()
+    print("=" * 60)
+    print("EXAMPLE 3: Information Flow Through Attention")
+    print("=" * 60)
+    print()
+    
+    # Create a sequence where position matters
+    text1 = "AAB"
+    text2 = "ABA"
+    text3 = "BAA"
+    
+    print("Three sequences with same tokens, different positions:")
+    print(f"  1. '{text1}'")
+    print(f"  2. '{text2}'")
+    print(f"  3. '{text3}'")
+    print()
+    
+    for text in [text1, text2, text3]:
+        tokens = tokenizer.encode(text)
+        tokens_tensor = torch.tensor([tokens])
+        
+        with torch.no_grad():
+            emb = embeddings(tokens_tensor)
+            output = attention(emb)
+            
+            # Look at the last position's output
+            last_output = output[0, -1, :4].numpy()
+            print(f"'{text}' - Last position output: {last_output.round(2)}")
+    
+    print()
+    print("Different outputs despite same tokens - position matters!")
+    print()
+    
+    # Example 4: Attention with and without causal mask
+    print("=" * 60)
+    print("EXAMPLE 4: Causal Mask Effect")
+    print("=" * 60)
+    print()
+    
+    text = "123"
+    tokens = tokenizer.encode(text)
+    tokens_tensor = torch.tensor([tokens])
+    
+    with torch.no_grad():
+        emb = embeddings(tokens_tensor)
+        
+        # Temporarily disable mask to show difference
+        original_mask = attention.mask.clone()
+        
+        # With causal mask (normal)
+        output_causal, weights_causal = attention(emb, return_weights=True)
+        
+        # Without causal mask (all tokens see all)
+        attention.mask.fill_(1)  # Allow all connections
+        output_full, weights_full = attention(emb, return_weights=True)
+        
+        # Restore original mask
+        attention.mask.data = original_mask
+        
+        print(f"Input: '{text}'")
+        print()
+        
+        print("With Causal Mask (autoregressive):")
+        print("     '1'    '2'    '3'")
+        for i in range(3):
+            row = [f"{weights_causal[0, i, j].item():6.3f}" for j in range(3)]
+            print(f"'{text[i]}': " + " ".join(row))
+        print("(Lower triangular - can only see past)")
+        print()
+        
+        print("Without Causal Mask (bidirectional):")
+        print("     '1'    '2'    '3'")
+        for i in range(3):
+            row = [f"{weights_full[0, i, j].item():6.3f}" for j in range(3)]
+            print(f"'{text[i]}': " + " ".join(row))
+        print("(Full attention - all tokens see all)")
+
+
 if __name__ == "__main__":
     import sys
     
@@ -503,12 +879,18 @@ if __name__ == "__main__":
             print("=" * 60)
             print()
             test_embeddings()
+        elif sys.argv[1] == "attention":
+            print("=" * 60)
+            print("ATTENTION MECHANISM EXPLORATION")
+            print("=" * 60)
+            print()
+            test_attention()
         else:
-            print("Usage: python tiny_llm.py [tokenizer|data|embeddings]")
+            print("Usage: python tiny_llm.py [tokenizer|data|embeddings|attention]")
     else:
         # Default: run the latest test
         print("=" * 60)
-        print("EMBEDDINGS EXPLORATION")
+        print("ATTENTION MECHANISM EXPLORATION")
         print("=" * 60)
         print()
-        test_embeddings()
+        test_attention()
